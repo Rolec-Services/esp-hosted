@@ -10,7 +10,10 @@
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/gpio.h>
+#include <linux/gpio/consumer.h>
 #include <linux/igmp.h>
+#include <linux/of.h>
+#include <linux/of_gpio.h>
 
 #include "esp.h"
 #include "esp_if.h"
@@ -25,11 +28,15 @@
 
 #define HOST_GPIO_PIN_INVALID -1
 #define CONFIG_ALLOW_MULTICAST_WAKEUP 1
+#define ESP_HOSTED_DT_COMPAT "espressif,esp-hosted"
 
 #define STRINGIFY_HELPER(x) #x
 #define STRINGIFY(x) STRINGIFY_HELPER(x)
 
 #define RELEASE_VERSION PROJECT_NAME "-" STRINGIFY(PROJECT_VERSION_MAJOR_1) "." STRINGIFY(PROJECT_VERSION_MAJOR_2) "." STRINGIFY(PROJECT_VERSION_MINOR) "." STRINGIFY(PROJECT_REVISION_PATCH_1) "." STRINGIFY(PROJECT_REVISION_PATCH_2)
+
+//#define TP() esp_info("%s:%s: %d\n", __FILE__, __func__, __LINE__)
+#define TP()
 
 static char *ota_file = NULL;
 static int resetpin = HOST_GPIO_PIN_INVALID;
@@ -37,7 +44,7 @@ static u32 clockspeed = 0;
 extern u8 ap_bssid[MAC_ADDR_LEN];
 extern volatile u8 host_sleep;
 u32 raw_tp_mode = 0;
-int log_level = ESP_INFO;
+int log_level = ESP_VERBOSE;
 #define VERSION_BUFFER_SIZE 50
 char version_str[VERSION_BUFFER_SIZE];
 
@@ -55,6 +62,31 @@ module_param(ota_file, charp, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
 MODULE_PARM_DESC(ota_file, "Ota file to update ESP firmware");
 
 static void deinit_adapter(void);
+
+static void esp_resolve_reset_gpio(void)
+{
+	struct device_node *np = NULL;
+	int dt_reset_gpio;
+
+	if (resetpin != HOST_GPIO_PIN_INVALID)
+		return;
+
+	np = of_find_compatible_node(NULL, NULL, ESP_HOSTED_DT_COMPAT);
+	if (np) {
+		dt_reset_gpio = of_get_named_gpio(np, "reset-gpios", 0);
+		of_node_put(np);
+
+		if (dt_reset_gpio >= 0) {
+			resetpin = dt_reset_gpio;
+			return;
+		}
+	}
+
+	if (!gpio_is_valid(resetpin)) {
+		esp_warn("host resetpin (%d) configured is invalid GPIO\n", resetpin);
+		resetpin = HOST_GPIO_PIN_INVALID;
+	}
+}
 
 
 struct multicast_list mcast_list = {0};
@@ -1044,30 +1076,48 @@ static struct esp_adapter *init_adapter(void)
 {
 	memset(&adapter, 0, sizeof(adapter));
 
+	TP();
+
 	/* Prepare interface RX work - high priority so RX processing isn't delayed
 	 * behind normal-priority kernel work (reduces ping latency jitter). */
 	adapter.if_rx_workqueue = alloc_workqueue("ESP_IF_RX_WORK_QUEUE",
 			WQ_HIGHPRI, 0);
+	
+	TP();
 
 	if (!adapter.if_rx_workqueue) {
 		deinit_adapter();
 		return NULL;
 	}
 
+	TP();
+
 	INIT_WORK(&adapter.if_rx_work, esp_if_rx_work);
+
+	TP();
 
 	skb_queue_head_init(&adapter.events_skb_q);
 
+	TP();
+
 	adapter.events_wq = alloc_workqueue("ESP_EVENTS_WORKQUEUE", WQ_HIGHPRI, 0);
+
+	TP();
 
 	if (!adapter.events_wq) {
 		deinit_adapter();
 		return NULL;
 	}
 
+	TP();
+
 	INIT_WORK(&adapter.events_work, esp_events_work);
 
+	TP();
+
 	INIT_WORK(&adapter.mac_flter_work, update_mac_filter);
+
+	TP();
 
 	return &adapter;
 }
@@ -1088,27 +1138,27 @@ static void deinit_adapter(void)
 
 static void esp_reset(void)
 {
-	if (resetpin != HOST_GPIO_PIN_INVALID) {
-		/* Check valid GPIO or not */
-		if (!gpio_is_valid(resetpin)) {
-			esp_warn("host resetpin (%d) configured is invalid GPIO\n", resetpin);
-			resetpin = HOST_GPIO_PIN_INVALID;
-		} else {
-			gpio_request(resetpin, "sysfs");
+	struct gpio_desc *reset_gpiod;
 
-			/* HOST's resetpin set to OUTPUT, HIGH */
-			gpio_direction_output(resetpin, true);
+	esp_resolve_reset_gpio();
 
-			/* HOST's resetpin set to LOW */
-			gpio_set_value(resetpin, 0);
-			udelay(200);
+	if (resetpin == HOST_GPIO_PIN_INVALID)
+		return;
 
-			/* HOST's resetpin set to INPUT */
-			gpio_direction_input(resetpin);
-
-			esp_dbg("Triggering ESP reset.\n");
-		}
+	reset_gpiod = gpio_to_desc(resetpin);
+	if (!reset_gpiod) {
+		esp_warn("failed to convert host resetpin (%d) to descriptor\n", resetpin);
+		return;
 	}
+
+	/* Keep existing pulse behavior: drive line high, then low, then release. */
+	gpiod_direction_output_raw(reset_gpiod, 1);
+	udelay(50);
+	gpiod_set_raw_value_cansleep(reset_gpiod, 0);
+	udelay(200);
+	gpiod_direction_input(reset_gpiod);
+
+	esp_dbg("Triggering ESP reset.\n");
 }
 
 static int __init esp_init(void)
@@ -1116,17 +1166,23 @@ static int __init esp_init(void)
 	int ret = 0;
 	struct esp_adapter *adapter = NULL;
 
+	TP();
 	/* Reset ESP, Clean start ESP */
 	esp_reset();
 	msleep(200);
+	TP();
 
 	adapter = init_adapter();
 
+	TP();
+
 	if (!adapter)
 		return -EFAULT;
-
+    TP();
 	/* Init transport layer */
 	ret = esp_init_interface_layer(adapter, clockspeed);
+
+	TP();
 
 	if (ret != 0) {
 		deinit_adapter();
@@ -1134,6 +1190,8 @@ static int __init esp_init(void)
 	}
 
 	ret = debugfs_init();
+
+	TP();
 	return ret;
 }
 
@@ -1152,10 +1210,6 @@ static void __exit esp_exit(void)
 
 	esp_deinit_interface_layer();
 	deinit_adapter();
-
-	if (resetpin != HOST_GPIO_PIN_INVALID) {
-		gpio_free(resetpin);
-	}
 	debugfs_exit();
 }
 MODULE_LICENSE("GPL");

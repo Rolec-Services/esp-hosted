@@ -9,10 +9,8 @@
 
 #include "esp.h"
 
-#define HANDSHAKE_PIN           22
-#define SPI_IRQ                 gpio_to_irq(HANDSHAKE_PIN)
-#define SPI_DATA_READY_PIN      27
-#define SPI_DATA_READY_IRQ      gpio_to_irq(SPI_DATA_READY_PIN)
+struct gpio_desc;
+
 #define SPI_BUF_SIZE            1600
 
 enum spi_flags_e {
@@ -22,6 +20,7 @@ enum spi_flags_e {
 	ESP_SPI_GPIO_HS_IRQ_DONE,
 	ESP_SPI_GPIO_DR_REQUESTED,
 	ESP_SPI_GPIO_DR_IRQ_DONE,
+	ESP_SPI_DEV_DYNAMIC,
 	ESP_SPI_DATAPATH_OPEN,
 };
 
@@ -34,6 +33,14 @@ struct esp_spi_context {
 	struct work_struct          spi_work;
 	struct workqueue_struct     *nw_cmd_reinit_workqueue;
 	struct work_struct          nw_cmd_reinit_work;
+	struct gpio_desc            *handshake_gpiod;
+	struct gpio_desc            *dataready_gpiod;
+	int                         handshake_irq;
+	int                         dataready_irq;
+	u8                          handshake_active_low;
+	u8                          dataready_active_low;
+	unsigned long               handshake_irq_trig;
+	unsigned long               dataready_irq_trig;
 	uint8_t                     spi_clk_mhz;
 	uint8_t                     reserved[2];
 	unsigned long               spi_flags;

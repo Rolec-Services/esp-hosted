@@ -1,15 +1,15 @@
 # Toolchain and kernel
-CROSS_COMPILE :=
-KERNEL := /lib/modules/$(shell uname -r)/build
-ARCH := $(shell uname -m)
+CROSS_COMPILE ?=
+KERNEL ?= /lib/modules/$(shell uname -r)/build
+ARCH ?= $(shell uname -m)
 
 # Normalize ARCH
-ifeq ($(ARCH), x86_64)
-    ARCH := x86
-endif
-ifeq ($(ARCH), aarch64)
-    ARCH := arm64
-endif
+#ifeq ($(ARCH), x86_64)
+#    ARCH := x86
+#endif
+#ifeq ($(ARCH), aarch64)
+#    ARCH := arm64
+#endif
 
 # Module name (default: sdio)
 target ?= sdio
@@ -20,6 +20,9 @@ MODULE_NAME := esp32_$(target)
 # (kernel 6.x, confirmed on 6.18) ignores EXTRA_CFLAGS, which silently
 # dropped these defines and compiled out the debug stats.
 CONFIG_DEBUG_LOGS ?= y
+ESP_LOG_LEVEL ?= ESP_INFO
+ccflags-y += -DESP_DEFAULT_LOG_LEVEL=$(ESP_LOG_LEVEL)
+
 ifeq ($(CONFIG_AP_SUPPORT), y)
     ccflags-y += -DCONFIG_AP_MODE
 endif
