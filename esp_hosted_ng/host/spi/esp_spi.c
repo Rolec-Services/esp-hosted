@@ -12,7 +12,6 @@
 #include <linux/of_gpio.h>
 #include <linux/device/bus.h>
 #include <dt-bindings/gpio/gpio.h>
-#include <dt-bindings/interrupt-controller/irq.h>
 #include "esp_spi.h"
 #include "esp_if.h"
 #include "esp_api.h"
@@ -27,8 +26,8 @@
 #define TX_RESUME_THRESHOLD     (TX_MAX_PENDING_COUNT/5)
 #define ESP_HOSTED_DT_COMPAT    "espressif,esp-hosted"
 
-//#define TP() esp_info("%s:%s: %d\n", __FILE__, __func__, __LINE__)
-#define TP()
+#define TP() esp_info("%s:%s: %d\n", __FILE__, __func__, __LINE__)
+//#define TP()
 
 extern u32 raw_tp_mode;
 uint8_t g_spi_mode = SPI_MODE_2;
@@ -40,27 +39,11 @@ static void adjust_spi_clock(u8 spi_clk_mhz);
 static void cleanup_spi_gpio(void);
 static void esp_spi_release_device(void);
 
-static unsigned long esp_spi_irqf_from_irq_type(u32 irq_type)
-{
-	switch (irq_type & IRQ_TYPE_SENSE_MASK) {
-	case IRQ_TYPE_EDGE_RISING:
-		return IRQF_TRIGGER_RISING;
-	case IRQ_TYPE_EDGE_FALLING:
-		return IRQF_TRIGGER_FALLING;
-	case IRQ_TYPE_EDGE_BOTH:
-		return IRQF_TRIGGER_RISING | IRQF_TRIGGER_FALLING;
-	default:
-		return 0;
-	}
-}
-
 static unsigned long esp_spi_gpio_irq_trigger_from_dt(struct device_node *np,
-		const char *prop, const char *irq_prop, u8 *active_low)
+		const char *prop, u8 *active_low)
 {
 	struct of_phandle_args gpiospec;
 	u32 gpio_flags = 0;
-	u32 irq_type;
-	unsigned long irqf;
 	int ret;
 
 	if (active_low)
@@ -77,30 +60,7 @@ static unsigned long esp_spi_gpio_irq_trigger_from_dt(struct device_node *np,
 	if (active_low)
 		*active_low = !!(gpio_flags & GPIO_ACTIVE_LOW);
 
-	irqf = (active_low && *active_low) ? IRQF_TRIGGER_FALLING : IRQF_TRIGGER_RISING;
-
-	ret = of_property_read_u32(np, irq_prop, &irq_type);
-	if (!ret) {
-		unsigned long parsed_irqf = esp_spi_irqf_from_irq_type(irq_type);
-
-		if (parsed_irqf)
-			return parsed_irqf;
-	}
-
-	/*
-	 * handshake/dataready use GPIO flags for polarity. IRQ_TYPE_EDGE_RISING (1)
-	 * collides with GPIO_ACTIVE_LOW (1), so treat only non-ambiguous edge
-	 * values here and rely on optional *-irq-type property for rising edge.
-	 */
-	irq_type = gpio_flags & IRQ_TYPE_SENSE_MASK;
-	if (irq_type == IRQ_TYPE_EDGE_FALLING || irq_type == IRQ_TYPE_EDGE_BOTH) {
-		unsigned long parsed_irqf = esp_spi_irqf_from_irq_type(irq_type);
-
-		if (parsed_irqf)
-			return parsed_irqf;
-	}
-
-	return irqf;
+	return IRQF_TRIGGER_RISING | IRQF_TRIGGER_FALLING;
 }
 
 volatile u8 data_path;
@@ -203,7 +163,7 @@ static int esp_spi_init_gpios_from_dt(struct device_node *np)
 	esp_info("Handshake GPIO: %d\n", handshake_gpio);
 
 	spi_context.handshake_irq_trig = esp_spi_gpio_irq_trigger_from_dt(np,
-		"handshake-gpios", "handshake-irq-type", &spi_context.handshake_active_low);
+		"handshake-gpios", &spi_context.handshake_active_low);
 
 	spi_context.handshake_gpiod = gpio_to_desc(handshake_gpio);
 	if (!spi_context.handshake_gpiod) {
@@ -227,7 +187,7 @@ static int esp_spi_init_gpios_from_dt(struct device_node *np)
 		return dataready_gpio;
 	}
 	spi_context.dataready_irq_trig = esp_spi_gpio_irq_trigger_from_dt(np,
-		"dataready-gpios", "dataready-irq-type", &spi_context.dataready_active_low);
+		"dataready-gpios", &spi_context.dataready_active_low);
 
 	spi_context.dataready_gpiod = gpio_to_desc(dataready_gpio);
 	if (!spi_context.dataready_gpiod) {
