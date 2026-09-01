@@ -11,7 +11,7 @@
 #include <linux/of.h>
 #include <linux/of_gpio.h>
 #include <linux/device/bus.h>
-#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/interrupt-controller/irq.h>
 #include "esp_spi.h"
 #include "esp_if.h"
 #include "esp_api.h"
@@ -26,11 +26,8 @@
 #define TX_RESUME_THRESHOLD     (TX_MAX_PENDING_COUNT/5)
 #define ESP_HOSTED_DT_COMPAT    "espressif,esp-hosted"
 
-#define TP() esp_info("%s:%s: %d\n", __FILE__, __func__, __LINE__)
-//#define TP()
-
 extern u32 raw_tp_mode;
-uint8_t g_spi_mode = SPI_MODE_2;
+//uint8_t g_spi_mode = SPI_MODE_2;
 static struct sk_buff *read_packet(struct esp_adapter *adapter);
 static int write_packet(struct esp_adapter *adapter, struct sk_buff *skb);
 static void spi_exit(void);
@@ -39,36 +36,11 @@ static void adjust_spi_clock(u8 spi_clk_mhz);
 static void cleanup_spi_gpio(void);
 static void esp_spi_release_device(void);
 
-static unsigned long esp_spi_gpio_irq_trigger_from_dt(struct device_node *np,
-		const char *prop, u8 *active_low)
-{
-	struct of_phandle_args gpiospec;
-	u32 gpio_flags = 0;
-	int ret;
-
-	if (active_low)
-		*active_low = 0;
-
-	ret = of_parse_phandle_with_args(np, prop, "#gpio-cells", 0, &gpiospec);
-	if (ret)
-		return IRQF_TRIGGER_RISING;
-
-	if (gpiospec.args_count > 1)
-		gpio_flags = gpiospec.args[1];
-
-	of_node_put(gpiospec.np);
-	if (active_low)
-		*active_low = !!(gpio_flags & GPIO_ACTIVE_LOW);
-
-	return IRQF_TRIGGER_RISING | IRQF_TRIGGER_FALLING;
-}
-
 volatile u8 data_path;
 volatile u8 host_sleep;
 static struct esp_spi_context spi_context;
 static char hardware_type = ESP_FIRMWARE_CHIP_UNRECOGNIZED;
 static atomic_t tx_pending;
-
 
 
 struct esp_spi_dt_config {
@@ -78,6 +50,36 @@ struct esp_spi_dt_config {
 	u8 mode;
 	struct device_node *node;
 };
+
+static unsigned long esp_spi_irq_trigger_from_dt(struct device_node *np,
+		const char *gpio_prop)
+{
+	struct of_phandle_args gpiospec;
+	u32 irq_type;
+	int ret;
+
+	ret = of_parse_phandle_with_args(np, gpio_prop, "#gpio-cells", 0, &gpiospec);
+	if (ret)
+		return IRQF_TRIGGER_RISING | IRQF_TRIGGER_FALLING;
+
+	if (gpiospec.args_count > 1)
+		irq_type = gpiospec.args[1] & IRQ_TYPE_SENSE_MASK;
+	else
+		irq_type = IRQ_TYPE_NONE;
+
+	of_node_put(gpiospec.np);
+
+	switch (irq_type) {
+	case IRQ_TYPE_EDGE_RISING:
+		return IRQF_TRIGGER_RISING;
+	case IRQ_TYPE_EDGE_FALLING:
+		return IRQF_TRIGGER_FALLING;
+	case IRQ_TYPE_EDGE_BOTH:
+		return IRQF_TRIGGER_RISING | IRQF_TRIGGER_FALLING;
+	default:
+		return IRQF_TRIGGER_RISING | IRQF_TRIGGER_FALLING;
+	}
+}
 
 static int esp_spi_parse_dt(struct esp_spi_dt_config *dt_cfg)
 {
@@ -125,8 +127,8 @@ static int esp_spi_parse_dt(struct esp_spi_dt_config *dt_cfg)
 	if (!of_property_read_u32(np, "spi-max-frequency", &val))
 		dt_cfg->max_speed_hz = val;
 	else
-		dt_cfg->max_speed_hz = spi_context.spi_clk_mhz * NUMBER_1M;
-
+		dt_cfg->max_speed_hz = SPI_INITIAL_CLK_MHZ * NUMBER_1M;	
+	
 	dt_cfg->mode = 0;
 	if (of_property_read_bool(np, "spi-cpol"))
 		dt_cfg->mode |= SPI_CPOL;
@@ -136,8 +138,10 @@ static int esp_spi_parse_dt(struct esp_spi_dt_config *dt_cfg)
 	if (!of_property_read_u32(np, "spi-mode", &val))
 		dt_cfg->mode = (u8)(val & (SPI_CPOL | SPI_CPHA));
 
+	#if AM_FIX
 	if (dt_cfg->mode == 0)
 		dt_cfg->mode = g_spi_mode;
+	#endif // AM_FIX
 
 	dt_cfg->node = np;
 
@@ -162,8 +166,8 @@ static int esp_spi_init_gpios_from_dt(struct device_node *np)
 	}
 	esp_info("Handshake GPIO: %d\n", handshake_gpio);
 
-	spi_context.handshake_irq_trig = esp_spi_gpio_irq_trigger_from_dt(np,
-		"handshake-gpios", &spi_context.handshake_active_low);
+	spi_context.handshake_irq_trig =
+		esp_spi_irq_trigger_from_dt(np, "handshake-gpios");
 
 	spi_context.handshake_gpiod = gpio_to_desc(handshake_gpio);
 	if (!spi_context.handshake_gpiod) {
@@ -186,8 +190,8 @@ static int esp_spi_init_gpios_from_dt(struct device_node *np)
 		spi_context.handshake_gpiod = NULL;
 		return dataready_gpio;
 	}
-	spi_context.dataready_irq_trig = esp_spi_gpio_irq_trigger_from_dt(np,
-		"dataready-gpios", &spi_context.dataready_active_low);
+	spi_context.dataready_irq_trig =
+		esp_spi_irq_trigger_from_dt(np, "dataready-gpios");
 
 	spi_context.dataready_gpiod = gpio_to_desc(dataready_gpio);
 	if (!spi_context.dataready_gpiod) {
@@ -302,6 +306,8 @@ static struct sk_buff *read_packet(struct esp_adapter *adapter)
 	struct esp_spi_context *context;
 	struct sk_buff *skb = NULL;
 
+	esp_info("Enter %s\n", __func__);
+
 	if (!data_path) {
 		return NULL;
 	}
@@ -324,6 +330,8 @@ static struct sk_buff *read_packet(struct esp_adapter *adapter)
 		return NULL;
 	}
 
+	esp_info("Exit %s\n", __func__);
+
 	return skb;
 }
 
@@ -332,6 +340,8 @@ static int write_packet(struct esp_adapter *adapter, struct sk_buff *skb)
 	u32 max_pkt_size = SPI_BUF_SIZE - sizeof(struct esp_payload_header);
 	struct esp_payload_header *payload_header = (struct esp_payload_header *) skb->data;
 	struct esp_skb_cb *cb = NULL;
+
+	esp_info("Enter %s\n", __func__);
 
 	if (!adapter || !adapter->if_context || !skb || !skb->data || !skb->len) {
 		esp_err("Invalid args\n");
@@ -379,6 +389,7 @@ static int write_packet(struct esp_adapter *adapter, struct sk_buff *skb)
 	if (spi_context.spi_workqueue)
 		queue_work(spi_context.spi_workqueue, &spi_context.spi_work);
 
+	esp_info("Exit %s\n", __func__);
 	return 0;
 }
 
@@ -496,51 +507,44 @@ static void esp_spi_work(struct work_struct *work)
 	u8 *rx_buf = NULL;
 	int ret = 0;
 	volatile int trans_ready, rx_pending;
-	int trans_ready_raw, rx_pending_raw;
 
-	TP();
 
-	trans_ready_raw = gpiod_get_value_cansleep(spi_context.handshake_gpiod);
-	rx_pending_raw = gpiod_get_value_cansleep(spi_context.dataready_gpiod);
-	if (trans_ready_raw < 0 || rx_pending_raw < 0) {
+	trans_ready = gpiod_get_value_cansleep(spi_context.handshake_gpiod);
+	rx_pending = gpiod_get_value_cansleep(spi_context.dataready_gpiod);
+
+	esp_info("trans_ready=%d rx_pending=%d\n", trans_ready, rx_pending);
+	if (trans_ready < 0 || rx_pending < 0) {
 		esp_err("Failed to read handshake/dataready GPIO state\n");
 		return;
 	}
-	TP();
-
-	trans_ready = spi_context.handshake_active_low ? !trans_ready_raw : trans_ready_raw;
-	rx_pending = spi_context.dataready_active_low ? !rx_pending_raw : rx_pending_raw;
 
 	if (!trans_ready) {
-		TP();
 		return;
 	}
 
 	if (data_path) {
-		TP();
 		tx_skb = skb_dequeue(&spi_context.tx_q[PRIO_Q_HIGH]);
-		TP();
 		if (!tx_skb) {
-			TP();
+			esp_info("No high priority TX skb, checking mid priority\n");
 			tx_skb = skb_dequeue(&spi_context.tx_q[PRIO_Q_MID]);
 		}
 		if (!tx_skb) {
-			TP();
+			esp_info("No mid priority TX skb, checking low priority\n");
 			tx_skb = skb_dequeue(&spi_context.tx_q[PRIO_Q_LOW]);
+			if (!tx_skb) {
+				esp_info("No low priority TX skb available\n");
+			}
 		}
 		if (tx_skb) {
-			TP();
 			if (atomic_read(&tx_pending))
 				atomic_dec(&tx_pending);
 
 			/* resume network tx queue if bearable load */
 			cb = (struct esp_skb_cb *)tx_skb->cb;
 			if (cb && cb->priv && atomic_read(&tx_pending) < TX_RESUME_THRESHOLD) {
-				TP();
 				esp_tx_resume(cb->priv);
 #if TEST_RAW_TP
 				if (raw_tp_mode != 0) {
-					TP();
 					esp_raw_tp_queue_resume();
 				}
 #endif
@@ -549,11 +553,9 @@ static void esp_spi_work(struct work_struct *work)
 	}
 
 	if (!rx_pending && !tx_skb) {
-		TP();
 		return;
 	}
 
-	TP();
 	memset(&trans, 0, sizeof(trans));
 	trans.speed_hz = spi_context.spi_clk_mhz * NUMBER_1M;
 
@@ -567,11 +569,8 @@ static void esp_spi_work(struct work_struct *work)
 	 * */
 
 	if (tx_skb) {
-		TP();
 		if (tx_skb->len < SPI_BUF_SIZE) {
-			TP();
 			if (skb_put_padto(tx_skb, SPI_BUF_SIZE)) {
-				TP();
 				esp_err("Failed to pad TX buffer to SPI size\n");
 				tx_skb = NULL;
 				return;
@@ -581,7 +580,6 @@ static void esp_spi_work(struct work_struct *work)
 		trans.tx_buf = tx_skb->data;
 		esp_hex_dump_verbose("tx: ", trans.tx_buf, 32);
 	} else {
-		TP();
 		tx_skb = esp_spi_alloc_skb(SPI_BUF_SIZE);
 		if (!tx_skb) {
 			esp_err("Failed to alloc dummy SPI TX skb\n");
@@ -591,14 +589,12 @@ static void esp_spi_work(struct work_struct *work)
 		memset((void *)trans.tx_buf, 0, SPI_BUF_SIZE);
 	}
 
-	TP();
 	rx_skb = esp_spi_alloc_skb(SPI_BUF_SIZE);
 	if (!rx_skb) {
 		esp_err("Failed to alloc SPI RX skb\n");
 		dev_kfree_skb(tx_skb);
 		return;
 	}
-	TP();
 	rx_buf = skb_put(rx_skb, SPI_BUF_SIZE);
 
 	memset(rx_buf, 0, SPI_BUF_SIZE);
@@ -606,15 +602,11 @@ static void esp_spi_work(struct work_struct *work)
 	trans.rx_buf = rx_buf;
 	trans.len = SPI_BUF_SIZE;
 
-	TP();
-
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(3, 15, 0))
 	if (hardware_type == ESP_FIRMWARE_CHIP_ESP32) {
 		trans.cs_change = 1;
 	}
 #endif
-
-	TP();
 
 	ret = spi_sync_transfer(spi_context.esp_spi_dev, &trans, 1);
 	if (ret) {
@@ -622,14 +614,12 @@ static void esp_spi_work(struct work_struct *work)
 		dev_kfree_skb(rx_skb);
 		dev_kfree_skb(tx_skb);
 	} else {
-		TP();
 		/* Free rx_skb if received data is not valid */
 		if (process_rx_buf(rx_skb))
 			dev_kfree_skb(rx_skb);
 
 		dev_kfree_skb(tx_skb);
 	}
-	TP();
 }
 
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 16, 0))
@@ -702,7 +692,10 @@ static int spi_dev_init(int spi_clk_mhz)
 	esp_board.max_speed_hz = dt_cfg.max_speed_hz;
 	esp_board.bus_num = dt_cfg.bus_num;
 	esp_board.chip_select = dt_cfg.chip_select;
+	
+	#if AM_FIX
 	g_spi_mode = dt_cfg.mode;
+	#endif // AM_FIX
 
 	spi_context.esp_spi_dev = esp_spi_find_dt_spi_device(dt_cfg.node);
 	if (spi_context.esp_spi_dev) {
@@ -729,10 +722,12 @@ static int spi_dev_init(int spi_clk_mhz)
 		set_bit(ESP_SPI_DEV_DYNAMIC, &spi_context.spi_flags);
 	}
 
-	esp_info("Using SPI MODE %d\n",g_spi_mode);
+	esp_info("Using SPI MODE %d\n", dt_cfg.mode);
 	spi_context.esp_spi_dev->mode = dt_cfg.mode;
 	spi_context.esp_spi_dev->max_speed_hz = dt_cfg.max_speed_hz;
 	spi_context.adapter->dev = &spi_context.esp_spi_dev->dev;
+
+	spi_context.spi_clk_mhz = spi_context.esp_spi_dev->max_speed_hz / NUMBER_1M;
 
 	status = spi_setup(spi_context.esp_spi_dev);
 
@@ -748,8 +743,10 @@ static int spi_dev_init(int spi_clk_mhz)
 	set_bit(ESP_SPI_BUS_SET, &spi_context.spi_flags);
 
 	status = esp_spi_init_gpios_from_dt(dt_cfg.node);
-	if (status)
+	if (status) {
+		esp_err("Failed to init GPIOs from DT, err:%d\n", status);
 		goto unregister_spi_dev;
+	}
 
 	spi_context.handshake_irq = gpiod_to_irq(spi_context.handshake_gpiod);
 	if (spi_context.handshake_irq < 0) {
@@ -809,11 +806,7 @@ static int spi_init(void)
 	uint8_t prio_q_idx = 0;
 	struct esp_adapter *adapter;
 
-	TP();
-
 	spi_context.spi_workqueue = alloc_ordered_workqueue("ESP_SPI_WORK_QUEUE", 0);
-
-	TP();
 
 	if (!spi_context.spi_workqueue) {
 		esp_err("spi workqueue failed to create\n");
@@ -821,41 +814,28 @@ static int spi_init(void)
 		return -EFAULT;
 	}
 
-	TP();
-
 	INIT_WORK(&spi_context.spi_work, esp_spi_work);
-
-	TP();
 
 	for (prio_q_idx = 0; prio_q_idx < MAX_PRIORITY_QUEUES; prio_q_idx++) {
 		skb_queue_head_init(&spi_context.tx_q[prio_q_idx]);
 		skb_queue_head_init(&spi_context.rx_q[prio_q_idx]);
 	}
 
-	TP();
-
 	status = spi_dev_init(spi_context.spi_clk_mhz);
 
-	TP();
 	if (status) {
 		spi_exit();
 		esp_err("Failed Init SPI device\n");
 		return status;
 	}
 
-	TP();
-
 	adapter = spi_context.adapter;
 	atomic_set(&adapter->state, ESP_CONTEXT_READY);
-
-	TP();
 
 	if (!adapter) {
 		spi_exit();
 		return -EFAULT;
 	}
-
-	TP();
 
 	adapter->dev = &spi_context.esp_spi_dev->dev;
 
@@ -961,10 +941,16 @@ int esp_init_interface_layer(struct esp_adapter *adapter, u32 speed)
 	adapter->if_ops = &if_ops;
 	adapter->if_type = ESP_IF_TYPE_SPI;
 	spi_context.adapter = adapter;
+	
+	#if AM_FIX
 	if (speed)
 		spi_context.spi_clk_mhz = speed;
 	else
 		spi_context.spi_clk_mhz = SPI_INITIAL_CLK_MHZ;
+	
+	esp_info("ESP SPI interface layer init, speed=%u MHz\n", spi_context.spi_clk_mhz);
+
+	#endif // AM_FIX
 
 	return spi_init();
 }

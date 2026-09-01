@@ -37,12 +37,10 @@ struct esp_spi_context {
 	struct gpio_desc            *dataready_gpiod;
 	int                         handshake_irq;
 	int                         dataready_irq;
-	u8                          handshake_active_low;
-	u8                          dataready_active_low;
 	unsigned long               handshake_irq_trig;
 	unsigned long               dataready_irq_trig;
 	uint8_t                     spi_clk_mhz;
-	uint8_t                     reserved[2];
+	uint8_t                     reserved[4];
 	unsigned long               spi_flags;
 };
 
@@ -50,6 +48,4 @@ enum {
 	CLOSE_DATAPATH,
 	OPEN_DATAPATH,
 };
-
-
 #endif

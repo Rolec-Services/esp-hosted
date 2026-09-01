@@ -35,9 +35,6 @@
 
 #define RELEASE_VERSION PROJECT_NAME "-" STRINGIFY(PROJECT_VERSION_MAJOR_1) "." STRINGIFY(PROJECT_VERSION_MAJOR_2) "." STRINGIFY(PROJECT_VERSION_MINOR) "." STRINGIFY(PROJECT_REVISION_PATCH_1) "." STRINGIFY(PROJECT_REVISION_PATCH_2)
 
-//#define TP() esp_info("%s:%s: %d\n", __FILE__, __func__, __LINE__)
-#define TP()
-
 static char *ota_file = NULL;
 static int resetpin = HOST_GPIO_PIN_INVALID;
 static u32 clockspeed = 0;
@@ -86,6 +83,7 @@ static void esp_resolve_reset_gpio(void)
 		esp_warn("host resetpin (%d) configured is invalid GPIO\n", resetpin);
 		resetpin = HOST_GPIO_PIN_INVALID;
 	}
+	esp_info("host resetpin (%d) configured\n", resetpin);
 }
 
 
@@ -426,6 +424,7 @@ static int process_event_esp_bootup(struct esp_adapter *adapter, u8 *evt_buf, u8
 static int esp_open(struct net_device *ndev)
 {
 	struct esp_wifi_device *priv = netdev_priv(ndev);
+	esp_info("Open interface %s\n", ndev->name);
 
 	if (!priv)
 		return -EINVAL;
@@ -443,6 +442,7 @@ static int esp_open(struct net_device *ndev)
 static int esp_stop(struct net_device *ndev)
 {
 	struct esp_wifi_device *priv = netdev_priv(ndev);
+	esp_info("Close interface %s\n", ndev->name);
 
 	if (!priv)
 		return 0;
@@ -1076,48 +1076,30 @@ static struct esp_adapter *init_adapter(void)
 {
 	memset(&adapter, 0, sizeof(adapter));
 
-	TP();
-
 	/* Prepare interface RX work - high priority so RX processing isn't delayed
 	 * behind normal-priority kernel work (reduces ping latency jitter). */
 	adapter.if_rx_workqueue = alloc_workqueue("ESP_IF_RX_WORK_QUEUE",
 			WQ_HIGHPRI, 0);
 	
-	TP();
-
 	if (!adapter.if_rx_workqueue) {
 		deinit_adapter();
 		return NULL;
 	}
 
-	TP();
-
 	INIT_WORK(&adapter.if_rx_work, esp_if_rx_work);
-
-	TP();
 
 	skb_queue_head_init(&adapter.events_skb_q);
 
-	TP();
-
 	adapter.events_wq = alloc_workqueue("ESP_EVENTS_WORKQUEUE", WQ_HIGHPRI, 0);
-
-	TP();
 
 	if (!adapter.events_wq) {
 		deinit_adapter();
 		return NULL;
 	}
 
-	TP();
-
 	INIT_WORK(&adapter.events_work, esp_events_work);
 
-	TP();
-
 	INIT_WORK(&adapter.mac_flter_work, update_mac_filter);
-
-	TP();
 
 	return &adapter;
 }
@@ -1153,7 +1135,6 @@ static void esp_reset(void)
 
 	/* Keep existing pulse behavior: drive line high, then low, then release. */
 	gpiod_direction_output_raw(reset_gpiod, 1);
-	udelay(50);
 	gpiod_set_raw_value_cansleep(reset_gpiod, 0);
 	udelay(200);
 	gpiod_direction_input(reset_gpiod);
@@ -1166,23 +1147,20 @@ static int __init esp_init(void)
 	int ret = 0;
 	struct esp_adapter *adapter = NULL;
 
-	TP();
 	/* Reset ESP, Clean start ESP */
 	esp_reset();
 	msleep(200);
-	TP();
 
 	adapter = init_adapter();
 
-	TP();
-
 	if (!adapter)
+	{
+		esp_err("Failed to init adapter\n");
 		return -EFAULT;
-    TP();
+	}
+
 	/* Init transport layer */
 	ret = esp_init_interface_layer(adapter, clockspeed);
-
-	TP();
 
 	if (ret != 0) {
 		deinit_adapter();
@@ -1191,7 +1169,7 @@ static int __init esp_init(void)
 
 	ret = debugfs_init();
 
-	TP();
+	esp_info("%s returns %d\n", __func__, ret);
 	return ret;
 }
 
