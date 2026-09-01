@@ -27,7 +27,7 @@
 #define ESP_HOSTED_DT_COMPAT    "espressif,esp-hosted"
 
 extern u32 raw_tp_mode;
-//uint8_t g_spi_mode = SPI_MODE_2;
+uint8_t g_spi_mode = SPI_MODE_2;
 static struct sk_buff *read_packet(struct esp_adapter *adapter);
 static int write_packet(struct esp_adapter *adapter, struct sk_buff *skb);
 static void spi_exit(void);
@@ -142,6 +142,8 @@ static int esp_spi_parse_dt(struct esp_spi_dt_config *dt_cfg)
 	if (dt_cfg->mode == 0)
 		dt_cfg->mode = g_spi_mode;
 	#endif // AM_FIX
+
+	g_spi_mode = dt_cfg->mode;
 
 	dt_cfg->node = np;
 
