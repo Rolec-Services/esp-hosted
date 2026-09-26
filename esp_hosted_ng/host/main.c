@@ -37,6 +37,7 @@
 
 static char *ota_file = NULL;
 static int resetpin = HOST_GPIO_PIN_INVALID;
+static bool reset_gpio_active_low = true;
 static u32 clockspeed = 0;
 extern u8 ap_bssid[MAC_ADDR_LEN];
 extern volatile u8 host_sleep;
@@ -75,6 +76,7 @@ static void esp_resolve_reset_gpio(void)
 
 		if (dt_reset_gpio >= 0) {
 			resetpin = dt_reset_gpio;
+			esp_info("host resetpin (%d) from DT\n", resetpin);
 			return;
 		}
 	}
@@ -83,7 +85,8 @@ static void esp_resolve_reset_gpio(void)
 		esp_warn("host resetpin (%d) configured is invalid GPIO\n", resetpin);
 		resetpin = HOST_GPIO_PIN_INVALID;
 	}
-	esp_info("host resetpin (%d) configured\n", resetpin);
+	esp_info("host resetpin (%d) configured, active_%s\n",
+		 resetpin, reset_gpio_active_low ? "low" : "high");
 }
 
 
@@ -1121,6 +1124,8 @@ static void deinit_adapter(void)
 static void esp_reset(void)
 {
 	struct gpio_desc *reset_gpiod;
+	int inactive_level;
+	int assert_level;
 
 	esp_resolve_reset_gpio();
 
@@ -1134,8 +1139,9 @@ static void esp_reset(void)
 	}
 
 	/* Keep existing pulse behavior: drive line high, then low, then release. */
-	gpiod_direction_output_raw(reset_gpiod, 1);
-	gpiod_set_raw_value_cansleep(reset_gpiod, 0);
+	gpiod_direction_output(reset_gpiod, 0);
+	udelay(200);
+	gpiod_set_value_cansleep(reset_gpiod, 1);
 	udelay(200);
 	gpiod_direction_input(reset_gpiod);
 
@@ -1146,6 +1152,7 @@ static int __init esp_init(void)
 {
 	int ret = 0;
 	struct esp_adapter *adapter = NULL;
+	struct gpio_desc *reset_gpiod;
 
 	/* Reset ESP, Clean start ESP */
 	esp_reset();
@@ -1166,6 +1173,14 @@ static int __init esp_init(void)
 		deinit_adapter();
 		return ret;
 	}
+
+	reset_gpiod = gpio_to_desc(resetpin);
+	if (!reset_gpiod) {
+		esp_warn("failed to convert host resetpin (%d) to descriptor\n", resetpin);
+		return -EFAULT;
+	}
+	/* enable the ESP device */
+	gpiod_direction_output(reset_gpiod, 1);
 
 	ret = debugfs_init();
 
