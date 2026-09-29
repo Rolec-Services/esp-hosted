@@ -550,11 +550,11 @@ static void esp_spi_work(struct work_struct *work)
 	}
 
 	if (!rx_pending && !tx_skb) {
-		esp_debug("No SPI transaction needed, aborting work\n");
+		esp_dbg("No SPI transaction needed, aborting work\n");
 		return;
 	}
 
-	esp_debug("Preparing and executing SPI transaction\n");
+	esp_dbg("Preparing and executing SPI transaction\n");
 	memset(&trans, 0, sizeof(trans));
 	trans.speed_hz = spi_context.spi_clk_mhz * NUMBER_1M;
 
@@ -568,9 +568,9 @@ static void esp_spi_work(struct work_struct *work)
 	 * */
 
 	if (tx_skb) {
-		esp_debug("TX skb available with length %d bytes\n", tx_skb->len);
+		esp_dbg("TX skb available with length %d bytes\n", tx_skb->len);
 		if (tx_skb->len < SPI_BUF_SIZE) {
-			esp_debug("Padding TX buffer from %d to %d bytes\n", tx_skb->len, SPI_BUF_SIZE);
+			esp_dbg("Padding TX buffer from %d to %d bytes\n", tx_skb->len, SPI_BUF_SIZE);
 			if (skb_put_padto(tx_skb, SPI_BUF_SIZE)) {
 				esp_err("Failed to pad TX buffer to SPI size\n");
 				tx_skb = NULL;
@@ -582,7 +582,7 @@ static void esp_spi_work(struct work_struct *work)
 		esp_hex_dump_verbose("tx: ", trans.tx_buf, 32);
 	} else {
 		tx_skb = esp_spi_alloc_skb(SPI_BUF_SIZE);
-		esp_debug("Allocating dummy SPI TX skb of size %d bytes\n", SPI_BUF_SIZE);
+		esp_dbg("Allocating dummy SPI TX skb of size %d bytes\n", SPI_BUF_SIZE);
 		if (!tx_skb) {
 			esp_err("Failed to alloc dummy SPI TX skb\n");
 			return;
@@ -591,7 +591,7 @@ static void esp_spi_work(struct work_struct *work)
 		memset((void *)trans.tx_buf, 0, SPI_BUF_SIZE);
 	}
 
-	esp_debug("Allocating SPI RX skb of size %d bytes\n", SPI_BUF_SIZE);
+	esp_dbg("Allocating SPI RX skb of size %d bytes\n", SPI_BUF_SIZE);
 	rx_skb = esp_spi_alloc_skb(SPI_BUF_SIZE);
 	if (!rx_skb) {
 		esp_err("Failed to alloc SPI RX skb\n");
@@ -600,7 +600,7 @@ static void esp_spi_work(struct work_struct *work)
 	}
 	rx_buf = skb_put(rx_skb, SPI_BUF_SIZE);
 
-	esp_debug("RX buffer initialized with zeros\n");
+	esp_dbg("RX buffer initialized with zeros\n");
 	memset(rx_buf, 0, SPI_BUF_SIZE);
 
 	trans.rx_buf = rx_buf;
@@ -608,12 +608,12 @@ static void esp_spi_work(struct work_struct *work)
 
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(3, 15, 0))
 	if (hardware_type == ESP_FIRMWARE_CHIP_ESP32) {
-		esp_debug("Setting CS change for ESP32 hardware\n");
+		esp_dbg("Setting CS change for ESP32 hardware\n");
 		trans.cs_change = 1;
 	}
 #endif
 
-	esp_debug("Executing SPI transaction\n");
+	esp_dbg("Executing SPI transaction\n");
 	ret = spi_sync_transfer(spi_context.esp_spi_dev, &trans, 1);
 	if (ret) {
 		esp_err("SPI Transaction failed: %d", ret);
@@ -621,13 +621,13 @@ static void esp_spi_work(struct work_struct *work)
 		dev_kfree_skb(tx_skb);
 	} else {
 		/* Free rx_skb if received data is not valid */
-		esp_debug("Processing received SPI data\n");
+		esp_dbg("Processing received SPI data\n");
 		if (process_rx_buf(rx_skb))
 		{
-			esp_debug("Received SPI data is not valid, freeing RX skb\n");
+			esp_dbg("Received SPI data is not valid, freeing RX skb\n");
 			dev_kfree_skb(rx_skb);
 		}
-		esp_debug("SPI transaction completed, freeing TX skb\n");
+		esp_dbg("SPI transaction completed, freeing TX skb\n");
 		dev_kfree_skb(tx_skb);
 	}
 }
@@ -640,11 +640,11 @@ static int __spi_controller_match(struct device *dev, const void *data)
 	const u16 *bus_num = data;
 
 	ctlr = container_of(dev, struct spi_controller, dev);
-	esp_debug("Checking if SPI controller matches bus number %d\n", *bus_num);
+	esp_dbg("Checking if SPI controller matches bus number %d\n", *bus_num);
 	if (!ctlr) {
 		return 0;
 	}
-	esp_debug("SPI controller bus number is %d\n", ctlr->bus_num);
+	esp_dbg("SPI controller bus number is %d\n", ctlr->bus_num);
 	return ctlr->bus_num == *bus_num;
 }
 
@@ -671,7 +671,7 @@ static struct spi_controller *spi_busnum_to_master(u16 bus_num)
 		return NULL;
 	}
 
-	esp_debug("Finding SPI controller for bus number %d\n", bus_num);
+	esp_dbg("Finding SPI controller for bus number %d\n", bus_num);
 	dev = class_find_device(master->dev.class, NULL, &bus_num, __spi_controller_match);
 	if (dev) {
 		ctlr = container_of(dev, struct spi_controller, dev);
@@ -710,10 +710,10 @@ static int spi_dev_init(int spi_clk_mhz)
 
 	spi_context.esp_spi_dev = esp_spi_find_dt_spi_device(dt_cfg.node);
 	if (spi_context.esp_spi_dev) {
-		esp_debug("Using pre-registered DT SPI device %s\n",
+		esp_dbg("Using pre-registered DT SPI device %s\n",
 			dev_name(&spi_context.esp_spi_dev->dev));
 	} else {
-		esp_debug("No pre-registered DT SPI device found, creating spi%d.%d\n",
+		esp_dbg("No pre-registered DT SPI device found, creating spi%d.%d\n",
 			esp_board.bus_num, esp_board.chip_select);
  
 		master = spi_busnum_to_master(esp_board.bus_num);
@@ -733,7 +733,7 @@ static int spi_dev_init(int spi_clk_mhz)
 		set_bit(ESP_SPI_DEV_DYNAMIC, &spi_context.spi_flags);
 	}
 
-	esp_debug("Using SPI MODE %d\n", dt_cfg.mode);
+	esp_dbg("Using SPI MODE %d\n", dt_cfg.mode);
 	spi_context.esp_spi_dev->mode = dt_cfg.mode;
 	spi_context.esp_spi_dev->max_speed_hz = dt_cfg.max_speed_hz;
 	spi_context.adapter->dev = &spi_context.esp_spi_dev->dev;
@@ -747,7 +747,7 @@ static int spi_dev_init(int spi_clk_mhz)
 		goto unregister_spi_dev;
 	}
 
-	esp_debug("Config - SPI clock[%dMHz] bus[%d] cs[%d] mode[%d]\n",
+	esp_dbg("Config - SPI clock[%dMHz] bus[%d] cs[%d] mode[%d]\n",
 		spi_context.spi_clk_mhz, esp_board.bus_num,
 		esp_board.chip_select, esp_board.mode);
 
@@ -773,7 +773,7 @@ static int spi_dev_init(int spi_clk_mhz)
 		goto unregister_spi_dev;
 	}
 
-	esp_debug("Config - SPI IRQ trigger flags: handshake=0x%lx dataready=0x%lx\n",
+	esp_dbg("Config - SPI IRQ trigger flags: handshake=0x%lx dataready=0x%lx\n",
 		spi_context.handshake_irq_trig, spi_context.dataready_irq_trig);
 	
 	status = request_irq(spi_context.handshake_irq, spi_interrupt_handler,
@@ -801,7 +801,7 @@ static int spi_dev_init(int spi_clk_mhz)
 	open_data_path();
 	of_node_put(dt_cfg.node);
 
-	esp_debug("SPI initialization complete\n");
+	esp_dbg("SPI initialization complete\n");
 
 	return 0;
 
@@ -907,7 +907,7 @@ static void spi_exit(void)
 		spi_context.spi_workqueue = NULL;
 	}
 
-	esp_debug("Removing ESP card\n");
+	esp_dbg("Removing ESP card\n");
 	esp_remove_card(spi_context.adapter);
 
 	cleanup_spi_gpio();
@@ -915,7 +915,7 @@ static void spi_exit(void)
 	if (spi_context.adapter && spi_context.adapter->hcidev)
 		esp_deinit_bt(spi_context.adapter);
 
-	esp_debug("Clearing ESP adapter device\n");
+	esp_dbg("Clearing ESP adapter device\n");
 	spi_context.adapter->dev = NULL;
 
 	esp_spi_release_device();
@@ -927,7 +927,7 @@ static void spi_exit(void)
 static void adjust_spi_clock(u8 spi_clk_mhz)
 {
 	if ((spi_clk_mhz) && (spi_clk_mhz != spi_context.spi_clk_mhz)) {
-		esp_debug("ESP Reconfigure SPI CLK to %u MHz\n", spi_clk_mhz);
+		esp_dbg("ESP Reconfigure SPI CLK to %u MHz\n", spi_clk_mhz);
 		spi_context.spi_clk_mhz = spi_clk_mhz;
 		spi_context.esp_spi_dev->max_speed_hz = spi_clk_mhz * NUMBER_1M;
 	}
@@ -963,7 +963,7 @@ int esp_init_interface_layer(struct esp_adapter *adapter, u32 speed)
 	else
 		spi_context.spi_clk_mhz = SPI_INITIAL_CLK_MHZ;
 	
-	esp_debug("ESP SPI interface layer init, speed=%u MHz\n", spi_context.spi_clk_mhz);
+	esp_dbg("ESP SPI interface layer init, speed=%u MHz\n", spi_context.spi_clk_mhz);
 
 	#endif // AM_FIX
 
