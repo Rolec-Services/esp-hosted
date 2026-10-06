@@ -42,7 +42,7 @@ static u32 clockspeed = 0;
 extern u8 ap_bssid[MAC_ADDR_LEN];
 extern volatile u8 host_sleep;
 u32 raw_tp_mode = 0;
-int log_level = ESP_VERBOSE;
+int log_level = ESP_ERR;
 #define VERSION_BUFFER_SIZE 50
 char version_str[VERSION_BUFFER_SIZE];
 
@@ -1143,6 +1143,8 @@ static void esp_reset(void)
 	udelay(200);
 	gpiod_set_value_cansleep(reset_gpiod, 1);
 	udelay(200);
+	gpiod_direction_output(reset_gpiod, 0);
+    udelay(50);
 	gpiod_direction_input(reset_gpiod);
 
 	esp_dbg("Triggering ESP reset.\n");
