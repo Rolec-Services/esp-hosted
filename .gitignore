@@ -51,3 +51,5 @@ esp_hosted_ng/esp/esp_driver/esp-idf/
 esp_hosted_ng/esp/esp_driver/network_adapter/deploy.sh
 esp_hosted_ng/host/spi/.esp_spi.o.cmd
 esp_hosted_ng/host/spi/esp_spi.o
+oe-logs
+oe-workdir
